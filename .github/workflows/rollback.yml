@@ -1,0 +1,61 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия (тег образа) для отката'
+        required: true
+        default: 'latest'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Convert repository name to lowercase
+        run: |
+          echo "REPO_LOWER=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      
+      - name: Rollback to previous version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          IMAGE=ghcr.io/${{ env.REPO_LOWER }}:$VERSION
+          
+          echo "Rolling back to version: $VERSION"
+          echo "Image: $IMAGE"
+          
+          # Останавливаем текущий production-контейнер
+          docker stop app-blue 2>/dev/null || true
+          docker rm app-blue 2>/dev/null || true
+          
+          # Запускаем указанную версию
+          docker run -d --name app-blue -p 8080:8080 $IMAGE
+          
+          sleep 5
+          curl --retry 5 --retry-delay 2 --fail http://localhost:8080/health || exit 1
+          
+          echo "Rollback to $VERSION completed" >> rollback.log
+          echo $VERSION > current_version.txt
+      
+      - name: Save rollback logs
+        if: always()
+        run: docker logs app-blue > rollback_logs.txt
+      
+      - name: Upload rollback logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-logs
+          path: rollback_logs.txt
+      
+      - name: Save rollback metrics
+        run: curl -s http://localhost:8080/metrics > rollback_metrics.txt
+      
+      - name: Upload rollback metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-metrics
+          path: rollback_metrics.txt
